@@ -1,0 +1,15 @@
+# Rust build directory
+/target/
+
+# Cargo lock file (if this is a library)
+# Cargo.lock
+
+# IDE and editor settings
+/.idea/
+/.vscode/
+/*.swp
+/.DS_Store
+/Thumbs.db
+
+# Rust debug and profiling artifacts
+*.profraw
