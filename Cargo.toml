@@ -1,0 +1,15 @@
+[package]
+name = "voxel_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit = { version = "*", features = ["wayland"]}
+pollster = { version = "0.4" }
+wgpu = { version = "*", features = ["wgsl"]}
+nalgebra = { version = "*" }
+dot_vox = { version = "*" }
+bytemuck = { version = "1.23.1", features = ["derive"]}
+egui = "0.32.0"
+egui-winit = "0.32.0"
+egui-wgpu = { version = "*" }
