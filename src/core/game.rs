@@ -65,12 +65,6 @@ impl Core {
         } else if let Some(wgpu) = wgpu {
             self.scene.reset_changed();
             let data = self.stage_svo();
-
-            for (i, r) in data.gpu_nodes.iter().enumerate() {
-                if r.mask != 0 {
-                    println!("{}", i)
-                }
-            }
             wgpu.replace_world_buffer(&data);
         }
 

@@ -7,7 +7,7 @@ use app::App;
 use util::timer::Time;
 use winit::event_loop::{ControlFlow, EventLoop};
 
-pub const UPDATE_PER_SECOND: u32 = 120;
+pub const UPDATE_PER_SECOND: u32 = 60;
 
 fn main() -> Result<(), winit::error::EventLoopError> {
     let mut app: App<'_, Time> = App::new();

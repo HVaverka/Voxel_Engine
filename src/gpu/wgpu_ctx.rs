@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use egui::FullOutput;
 use egui_wgpu::ScreenDescriptor;
-use wgpu::Device;
+use wgpu::wgt::{BufferDescriptor, QuerySetDescriptor};
+use wgpu::{BufferUsages, Device, QueryType};
 use winit::window::Window;
 
 use wgpu::{
@@ -49,7 +50,7 @@ impl<'window> WgpuCtx<'window> {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS,
                 // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
                 required_limits: adapter.limits(),
                 memory_hints: Performance,
@@ -65,6 +66,7 @@ impl<'window> WgpuCtx<'window> {
         // default config for surface to use
         let mut surface_config = surface.get_default_config(&adapter, width, height).unwrap();
         surface_config.format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        surface_config.present_mode = wgpu::PresentMode::Mailbox;
         surface.configure(&device, &surface_config);
 
         let resources = Resources::new(&device, &surface_config);
@@ -97,6 +99,7 @@ impl<'window> WgpuCtx<'window> {
     pub fn draw(&mut self, egui: &mut Egui, output: FullOutput) {
         match self.surface.get_current_texture() {
             Ok(frame) => {
+                println!("Ok");
                 self.dispatch_pipelines(frame, egui, output);
             }
             Err(wgpu::SurfaceError::Lost) => {
@@ -116,11 +119,56 @@ impl<'window> WgpuCtx<'window> {
             label: Some("Compute encoder"),
         });
 
+        let query_set = self.device.create_query_set(&QuerySetDescriptor {
+            label: Some("Time query set"),
+            ty: QueryType::Timestamp,
+            count: 4,
+        });
+
+        encoder.write_timestamp(&query_set, 0);
         self.encode_compute_pass(&mut encoder);
+
+        encoder.write_timestamp(&query_set, 1);
         self.encode_render_pass(&mut encoder, &frame);
+
+        encoder.write_timestamp(&query_set, 2);
         self.encode_egui_pass(&mut encoder, egui, output, &frame);
 
+        encoder.write_timestamp(&query_set, 3);
+
+        let query_resolve_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Query Resolve Buffer"),
+            size: size_of::<u64>() as u64 * 4,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let readback_buffer = self.device.create_buffer(&BufferDescriptor
+            { label: Some("Readback buffer"),
+            size: size_of::<u64>() as u64 * 4,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        encoder.resolve_query_set(&query_set, 0..4, &query_resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(&query_resolve_buffer, 0, &readback_buffer, 0, size_of::<u64>() as u64 * 4);
+
         self.queue.submit(Some(encoder.finish()));
+
+        let _ = self.device.poll(wgpu::MaintainBase::Wait);
+
+        let buffer_slice = readback_buffer.slice(..);
+        buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = self.device.poll(wgpu::MaintainBase::Wait);
+
+        let data = buffer_slice.get_mapped_range();
+        let stamps: &[u64] = bytemuck::cast_slice(&data);
+
+        let period = self.queue.get_timestamp_period();
+        println!("Compute pass duration: {}", (stamps[1] - stamps[0]) as f64 * period as f64);
+        println!("Render pass duration: {}", (stamps[2] - stamps[1]) as f64 * period as f64);
+        println!("Gui pass duration: {}", (stamps[3] - stamps[2]) as f64 * period as f64);
+
         frame.present(); // ✅ Present frame after submission
     }
 
