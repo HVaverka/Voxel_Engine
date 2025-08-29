@@ -81,6 +81,7 @@ impl Stager {
 
     pub fn stage(&mut self, chunks: &Scene, start: (i32, i32, i32), end: (i32, i32, i32)) {
         let mut nodes = Vec::new();
+        nodes.push(GpuNode::default()); // push NULL value
 
         reserve_roots(&mut nodes, start, end);
 

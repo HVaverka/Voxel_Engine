@@ -67,7 +67,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // world ray
     let ray = normalize(primary_ray.x * cam.right + primary_ray.y * cam.up + primary_ray.z * cam.dir);
 
-    let dist: f32 = dda_iter(ray); // distance returned by DDA
+    let dist: f32 = dda_iter(ray); // distance returned by DDA / dda_iter(ray);
     let b: f32 = 1.0 / (1.0 + dist * dist); // closer = brighter, farther = darker
 
     textureStore(output_texture, vec2<i32>(global_id.xy), vec4<f32>(b, b, b, 1.0));
@@ -83,6 +83,7 @@ struct StackFrame {
 
     node_offset: u32,
     depth: i32,
+    steps: u32,
     
     step_to_boundary: bool,
     resumed: bool,
@@ -170,6 +171,8 @@ fn dda_iter(ray_dir: vec3<f32>) -> f32 {
 
         0u,     // node
         1,      // depth
+        0u,     // steps done
+
         false,  // step to boundary
         false,  // resumed
     );
@@ -179,7 +182,11 @@ fn dda_iter(ray_dir: vec3<f32>) -> f32 {
 
     stack_push(&stack, base_frame);
 
+    var counter = 0u;
     while stack_full(&stack) {
+        if (counter > 10u) { return 5f; }
+        counter += 1u;
+
         var frame = stack_peek(&stack);
         var distance = 0f;
 
@@ -216,7 +223,8 @@ fn dda_iter(ray_dir: vec3<f32>) -> f32 {
             }
         }
 
-        for (var i: u32 = 0u; i < MAX_STEP_COUNT; i++) {
+        let max_step_count = MAX_STEP_COUNT - frame.steps;
+        for (var i: u32 = 0u; i < max_step_count; i++) {
             let cell_offset = get_sub_region_offset(frame.map_check, curr_node);
 
             if (frame.depth != 4 && cell_offset != 0u) {
@@ -233,17 +241,22 @@ fn dda_iter(ray_dir: vec3<f32>) -> f32 {
 
                     cell_offset,        // node
                     frame.depth + 1,    // depth
+                    0u,                 // steps
                     distance != 0f,     // step to boundary
                     false,              // resumed
                 );
+
+                frame.steps = i + 1u;
                 // upload changes to current frame
                 stack_update(&stack, frame);
-                stack_push(&stack, new_frame);
+                if(!stack_push(&stack, new_frame)) {
+                    return 0f;
+                };
                 break;
             } 
             
 //            else if (frame.depth == 4 && cell_offset != 0) {
-            else if (frame.depth >= 2) {
+            else if (frame.depth >= 4) {
                 let vec = (ray_dir * distance * cell_size + frame.origin - cam.origin);
                 return dot(vec, vec);
             }
@@ -268,7 +281,7 @@ fn init_region(origin: vec3<f32>) -> GpuNode {
 }
 
 fn get_region(offset: u32) -> GpuNode {
-    return nodes[offset + 1u];
+    return nodes[offset];
 }
 
 fn get_sub_region_offset(map_check: vec3<i32>, node: GpuNode) -> u32 {
@@ -276,13 +289,14 @@ fn get_sub_region_offset(map_check: vec3<i32>, node: GpuNode) -> u32 {
     let coord  = vec3<u32>(map_check) & vec3<u32>(mask);
     // let offset = coord.x + coord.y * SUBDIVISION + coord.z * SUBDIVISION * SUBDIVISION;
     let shift = coord.x + coord.y * SUBDIVISION + coord.z * SUBDIVISION * SUBDIVISION;
-    
+
+    var pointer = 0u;
     if (shift < 32u) {
         if ((node.mask0 & (1u << shift)) != 0u) {
             let o1 = countOneBits(node.mask0 >> shift);
             let offset = o1 - 1u;
 
-            return node.base + offset;
+            pointer = node.base + offset;
         }
     } else {
         let shift = shift - 32u;
@@ -291,11 +305,12 @@ fn get_sub_region_offset(map_check: vec3<i32>, node: GpuNode) -> u32 {
             let o2 = countOneBits(node.mask1 >> shift);
             let offset = o1 + o2 - 1u;
 
-            return node.base + offset;
+            pointer = node.base + offset;
         }
     }
 
-    return 0u;
+    if (pointer >= header.size) { return 0u; }
+    return pointer;
 }
 
 fn step(frame: ptr<function, StackFrame>, step: vec3<i32>, ray_unit_step: vec3<f32>) -> f32 {
