@@ -230,6 +230,7 @@ fn dda_iter(ray_dir: vec3<f32>) -> vec3<f32> {
 
         for (var i = steps; i < MAX_STEP_COUNT; i++) {
             let sub_node_offset = get_sub_region_offset(map_check, node);
+            if (depth == MAX_DEPTH) { return cam.origin; }
 
             if (sub_node_offset != 0u && depth < MAX_DEPTH) {
                 steps = i + 1u;
