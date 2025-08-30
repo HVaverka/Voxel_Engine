@@ -28,8 +28,8 @@ struct GpuRoot {
     size: u32,
 }
 struct GpuNode {
-    mask1: u32,
-    mask0: u32,
+    mask_h: u32,
+    mask_l: u32,
 
     base: u32,
     color: u32,
@@ -67,7 +67,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // world ray
     let ray = normalize(primary_ray.x * cam.right + primary_ray.y * cam.up + primary_ray.z * cam.dir);
 
-    let dist: f32 = dda_iter(ray); // distance returned by DDA / dda_iter(ray);
+//    let dist: f32 = dda_iter(ray); // distance returned by DDA / dda_iter(ray);
+//    let b: f32 = 1.0 / (1.0 + dist * dist); // closer = brighter, farther = darker
+
+    let end = dda_iter(ray);
+    let dist = distance(end, cam.origin);
     let b: f32 = 1.0 / (1.0 + dist * dist); // closer = brighter, farther = darker
 
     textureStore(output_texture, vec2<i32>(global_id.xy), vec4<f32>(b, b, b, 1.0));
@@ -82,7 +86,7 @@ struct StackFrame {
     high: vec3<i32>,
 
     node_offset: u32,
-    depth: i32,
+    depth: u32,
     steps: u32,
     
     step_to_boundary: bool,
@@ -137,9 +141,10 @@ fn stack_full(stack: ptr<function, Stack>) -> bool {
 const SUBDIVISION: u32 = 4u;
 const REGION_SIZE: u32 = 256u;
 const SIZE_XYZ: vec3<i32> = vec3<i32>(i32(SUBDIVISION), i32(SUBDIVISION), i32(SUBDIVISION));
-const MAX_STEP_COUNT = 3u * SUBDIVISION - 2u;
+const MAX_STEP_COUNT = (3u * SUBDIVISION - 2u) * 8u;
+const MAX_DEPTH = 3u;
 
-fn dda_iter(ray_dir: vec3<f32>) -> f32 {
+fn dda_iter(ray_dir: vec3<f32>) -> vec3<f32> {
     let origin = cam.origin;
     let step: vec3<i32> = vec3<i32>(sign(ray_dir));
 
@@ -151,16 +156,14 @@ fn dda_iter(ray_dir: vec3<f32>) -> f32 {
         sqrt(1.0 + (ray_dir.x * ray_dir.x + ray_dir.y * ray_dir.y) / (ray_dir.z * ray_dir.z)),
     );
 
-    var curr_node = GpuNode(
-        0u,
-        0u,
-        0u,
-        0u,
-    );
+    var curr: GpuNode;
+    // -------------------------------- //
 
-    var low: vec3<i32> = header.base;
-    var high: vec3<i32> = header.end;
+    // Stack set up
+    var stack: Stack = Stack();
+    stack_init(&stack);
 
+    // push base frame
     let base_frame = StackFrame(
         origin,                     // origin
         vec3<i32>(0, 0, 0),         // map_check
@@ -169,115 +172,120 @@ fn dda_iter(ray_dir: vec3<f32>) -> f32 {
         header.base,    // low
         header.end,     // high
 
-        0u,     // node
-        1,      // depth
+        init_region_offset(origin), // offset to node
+        0u,      // depth
         0u,     // steps done
 
         false,  // step to boundary
         false,  // resumed
     );
-
-    var stack = Stack();
-    stack_init(&stack);
-
     stack_push(&stack, base_frame);
 
-    var counter = 0u;
-    while stack_full(&stack) {
-        if (counter > 10u) { return 5f; }
-        counter += 1u;
+    var map_check: vec3<i32> = vec3<i32>(0);
+    var ray_length: vec3<f32> = vec3<f32>(0.0);
 
+    while(stack_full(&stack)) {
         var frame = stack_peek(&stack);
-        var distance = 0f;
 
-        if (frame.depth == 1) {
-            curr_node = init_region(frame.origin);
-        } else {
-            curr_node = get_region(frame.node_offset);
-        }
+        // local variables for layer in voxel grid:
+        let origin: vec3<f32> = frame.origin;
 
-        let cell_jump = pow_u32(SUBDIVISION, 1u);
-        let cell_size = f32(REGION_SIZE) / f32(cell_jump);
+        let low: vec3<i32> = frame.low;
+        let high: vec3<i32> = frame.high;
+    
+        let node_offset: u32 = frame.node_offset;
+        let depth: u32 = frame.depth;
+        var steps: u32 = frame.steps;
 
-        if (!frame.resumed) {
-            frame.resumed = true;
-            let origin_grid: vec3<f32> = (frame.origin + ray_dir_offset) / cell_size;
-            frame.map_check = vec3<i32>(floor(frame.origin));
+        let step_to_boundary: bool = frame.step_to_boundary;
+        var resumed: bool = frame.resumed;
 
-            let delta = origin_grid - vec3<f32>(frame.map_check);
-            
-            frame.ray_length = init_ray_length(ray_dir, ray_unit_step, delta);
+        let cell_size: f32 = f32(REGION_SIZE) / f32(pow_u32(SUBDIVISION, depth));
+        var distance = 0.0;
+        let node: GpuNode = get_region(node_offset);
 
-            let cell_offset = get_sub_region_offset(frame.map_check, curr_node);
+        // initialize ray at layer
+        if (!resumed) {
+            resumed = true;
 
-            // approaching new bounding box
-            if (frame.step_to_boundary) {
-                distance = step(&frame, step, ray_unit_step);
+            let origin_grid = (origin + ray_dir_offset) / cell_size;
+            map_check = vec3<i32>(floor(origin_grid));
+
+            let delta = origin_grid - vec3<f32>(map_check);
+            ray_length = init_ray_length(ray_dir, ray_unit_step, delta);
+
+            if (step_to_boundary) {
+                distance = step(&map_check, &ray_length, step, ray_unit_step);
             }
-            
         } else {
-            distance = step(&frame, step, ray_unit_step);
-            if (outside_bounds(frame.map_check, frame.low, frame.high)) {
+            map_check = frame.map_check;
+            ray_length = frame.ray_length;
+
+            distance = step(&map_check, &ray_length, step, ray_unit_step);
+            if (outside_bounds(map_check, low, high)) {
                 stack_pop(&stack);
                 continue;
             }
         }
 
-        let max_step_count = MAX_STEP_COUNT - frame.steps;
-        for (var i: u32 = 0u; i < max_step_count; i++) {
-            let cell_offset = get_sub_region_offset(frame.map_check, curr_node);
+        for (var i = steps; i < MAX_STEP_COUNT; i++) {
+            let sub_node_offset = get_sub_region_offset(map_check, node);
 
-            if (frame.depth != 4 && cell_offset != 0u) {
-                let low = frame.map_check * i32(SUBDIVISION);
+            if (sub_node_offset != 0u && depth < MAX_DEPTH) {
+                steps = i + 1u;
+                frame.steps = steps;
+                frame.map_check = map_check;
+                frame.ray_length = ray_length;
+                frame.resumed = resumed;
+                stack_update(&stack, frame);
+
+                let low = map_check * i32(SUBDIVISION);
                 let high = low + SIZE_XYZ;
 
                 let new_frame = StackFrame(
-                    frame.origin + (ray_dir - ray_dir_offset) * distance * cell_size, // origin
-                    vec3<i32>(0, 0, 0),       // map_check
-                    vec3<f32>(0.0, 0.0, 0.0), // ray_length
+                    origin + (ray_dir - ray_dir_offset) * distance * cell_size,
 
-                    low,    // low
-                    high,   // high
+                    vec3<i32>(0), // mapcheck
+                    vec3<f32>(0.0), // ray_length
 
-                    cell_offset,        // node
-                    frame.depth + 1,    // depth
-                    0u,                 // steps
-                    distance != 0f,     // step to boundary
-                    false,              // resumed
+                    low,
+                    high,
+
+                    sub_node_offset,
+
+                    depth + 1u,
+                    0u, // steps
+
+                    distance != 0.0, // step to boundary
+                    false,
                 );
 
-                frame.steps = i + 1u;
-                // upload changes to current frame
-                stack_update(&stack, frame);
-                if(!stack_push(&stack, new_frame)) {
-                    return 0f;
-                };
+                stack_push(&stack, new_frame);
                 break;
-            } 
-            
-//            else if (frame.depth == 4 && cell_offset != 0) {
-            else if (frame.depth >= 4) {
-                let vec = (ray_dir * distance * cell_size + frame.origin - cam.origin);
-                return dot(vec, vec);
             }
 
-            distance = step(&frame, step, ray_unit_step);
-            if(outside_bounds(frame.map_check, frame.low, frame.high)) {
+            if (depth == MAX_DEPTH && sub_node_offset != 0u) {
+                // return point of collision
+                return origin + ray_dir * distance * cell_size;
+            }
+
+            distance = step(&map_check, &ray_length, step, ray_unit_step);
+            if (outside_bounds(map_check, low, high)) {
                 stack_pop(&stack);
                 break;
             }
         }
     }
-    return 1000000000.0; // miss / return sky box
+    return vec3<f32>(1000000.0);
 }
 
-fn init_region(origin: vec3<f32>) -> GpuNode {
+fn init_region_offset(origin: vec3<f32>) -> u32 {
     let coord = vec3<i32>(floor(origin / 256f));
     let offset = coord - header.base;
     let per_axis = header.end - header.base;
 
     let final_offset = u32(offset.x + offset.y * per_axis.x + offset.z * per_axis.x * per_axis.y);
-    return nodes[final_offset + 1u]; // +1 -> 0x0 is NULL
+    return final_offset + 1u; // + 1 because [0] is NULL
 }
 
 fn get_region(offset: u32) -> GpuNode {
@@ -292,17 +300,17 @@ fn get_sub_region_offset(map_check: vec3<i32>, node: GpuNode) -> u32 {
 
     var pointer = 0u;
     if (shift < 32u) {
-        if ((node.mask0 & (1u << shift)) != 0u) {
-            let o1 = countOneBits(node.mask0 >> shift);
+        if ((node.mask_l & (1u << shift)) != 0u) {
+            let o1 = countOneBits(node.mask_l >> shift);
             let offset = o1 - 1u;
 
             pointer = node.base + offset;
         }
     } else {
         let shift = shift - 32u;
-        if ((node.mask1 & (1u << shift)) != 0u) {
-            let o1 = countOneBits(node.mask0);
-            let o2 = countOneBits(node.mask1 >> shift);
+        if ((node.mask_h & (1u << shift)) != 0u) {
+            let o1 = countOneBits(node.mask_l);
+            let o2 = countOneBits(node.mask_h >> shift);
             let offset = o1 + o2 - 1u;
 
             pointer = node.base + offset;
@@ -313,33 +321,33 @@ fn get_sub_region_offset(map_check: vec3<i32>, node: GpuNode) -> u32 {
     return pointer;
 }
 
-fn step(frame: ptr<function, StackFrame>, step: vec3<i32>, ray_unit_step: vec3<f32>) -> f32 {
+fn step(
+    map_check: ptr<function, vec3<i32>>,
+    ray_length: ptr<function, vec3<f32>>,
+    step: vec3<i32>,
+    ray_unit_step: vec3<f32>,
+) -> f32 {
     var distance: f32 = 0.0;
 
-    if ((*frame).ray_length.x < (*frame).ray_length.y && (*frame).ray_length.x < (*frame).ray_length.z) {
-        (*frame).map_check.x += step.x;
-        distance = (*frame).ray_length.x;
-        (*frame).ray_length.x += ray_unit_step.x;
-    } else if ((*frame).ray_length.y < (*frame).ray_length.z) {
-        (*frame).map_check.y += step.y;
-        distance = (*frame).ray_length.y;
-        (*frame).ray_length.y += ray_unit_step.y;
+    if ((*ray_length).x < (*ray_length).y && (*ray_length).x < (*ray_length).z) {
+        (*map_check).x += step.x;
+        distance = (*ray_length).x;
+        (*ray_length).x += ray_unit_step.x;
+    } else if ((*ray_length).y < (*ray_length).z) {
+        (*map_check).y += step.y;
+        distance = (*ray_length).y;
+        (*ray_length).y += ray_unit_step.y;
     } else {
-        (*frame).map_check.z += step.z;
-        distance = (*frame).ray_length.z;
-        (*frame).ray_length.z += ray_unit_step.z;
+        (*map_check).z += step.z;
+        distance = (*ray_length).z;
+        (*ray_length).z += ray_unit_step.z;
     }
 
     return distance;
 }
 
 fn outside_bounds(map_check: vec3<i32>, low: vec3<i32>, high: vec3<i32>) -> bool {
-    return (map_check.x < low.x) || // add - epsilon
-           (map_check.y < low.y) || // ----||-----
-           (map_check.z < low.z) || // ----||-----
-           (map_check.x >= high.x) || // add + epsilon
-           (map_check.y >= high.y) || // add + epsilon
-           (map_check.z >= high.z);
+    return any(map_check < low) || any(map_check >= high);
 }
 
 fn init_ray_length(ray_dir: vec3<f32>, ray_unit_step: vec3<f32>, delta: vec3<f32>) -> vec3<f32> {

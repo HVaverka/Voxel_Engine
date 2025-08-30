@@ -1,6 +1,8 @@
-use std::any::Any;
+use std::fs::File;
+use std::io::Write;
 use std::sync::Arc;
 
+use bytemuck::{Pod, Zeroable};
 use egui::FullOutput;
 use egui_wgpu::ScreenDescriptor;
 use wgpu::wgt::{BufferDescriptor, QuerySetDescriptor};
@@ -66,7 +68,7 @@ impl<'window> WgpuCtx<'window> {
         // default config for surface to use
         let mut surface_config = surface.get_default_config(&adapter, width, height).unwrap();
         surface_config.format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        surface_config.present_mode = wgpu::PresentMode::Mailbox;
+        surface_config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&device, &surface_config);
 
         let resources = Resources::new(&device, &surface_config);
@@ -152,6 +154,17 @@ impl<'window> WgpuCtx<'window> {
 
         encoder.resolve_query_set(&query_set, 0..4, &query_resolve_buffer, 0);
         encoder.copy_buffer_to_buffer(&query_resolve_buffer, 0, &readback_buffer, 0, size_of::<u64>() as u64 * 4);
+/*
+        let (_, nodes) = self.resources.get_world_buffer();
+        let read_back_voxel_buffer = self.device.create_buffer(&BufferDescriptor {
+            label: Some("Voxel Buffer"),
+            size: nodes.size(),
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        encoder.copy_buffer_to_buffer(nodes, 0, &read_back_voxel_buffer, 0, nodes.size());
+*/
 
         self.queue.submit(Some(encoder.finish()));
 
@@ -169,6 +182,19 @@ impl<'window> WgpuCtx<'window> {
         println!("Render pass duration: {}", (stamps[2] - stamps[1]) as f64 * period as f64);
         println!("Gui pass duration: {}", (stamps[3] - stamps[2]) as f64 * period as f64);
 
+        /*
+        let buffer_slice = read_back_voxel_buffer.slice(..);
+        buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = self.device.poll(wgpu::MaintainBase::Wait);
+        let data = buffer_slice.get_mapped_range();
+
+        let nodes: Vec<GpuNode2> = bytemuck::cast_slice(&data).to_vec();
+
+        let mut file = File::create("OutputGPU.txt").unwrap();
+        for item in &nodes {
+            let _ = writeln!(file, "{:?}", item);
+        }
+        */
         frame.present(); // ✅ Present frame after submission
     }
 
@@ -272,4 +298,13 @@ impl<'window> WgpuCtx<'window> {
     fn create_command_encoder(&self, desc: &CommandEncoderDescriptor) -> CommandEncoder {
         self.device.create_command_encoder(desc)
     }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Zeroable, Pod)]
+struct GpuNode2 {
+    mask0: u32,
+    mask1: u32,
+    base: u32,
+    color: u32,
 }

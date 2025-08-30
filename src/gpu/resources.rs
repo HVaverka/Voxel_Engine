@@ -59,7 +59,7 @@ impl Resources {
         let (header, nodes) = self.get_world_buffer();
 
         let length = bytemuck::cast_slice::<GpuNode, u8>(&data.gpu_nodes).len();
-        queue.write_buffer(nodes, size_of::<GpuNode>() as u64, bytemuck::cast_slice(&data.gpu_nodes));
+        queue.write_buffer(nodes, 0, bytemuck::cast_slice(&data.gpu_nodes));
         queue.write_buffer(header, 0, bytemuck::bytes_of(&data.header));
 
         queue.submit([]);

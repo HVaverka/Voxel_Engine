@@ -1,3 +1,7 @@
+use std::fs::File;
+use std::io::Write;
+
+
 use dot_vox::{load, DotVoxData};
 
 use crate::{
@@ -94,6 +98,11 @@ impl Stager {
             }
         }
 
+        let mut file = File::create("output_voxel.txt").unwrap();
+        for item in &nodes {
+            let _ = writeln!(file, "{:?}", item);
+        }
+
         let header = GpuSceneHeader {
             start: [start.0, start.1, start.2, 0],
             end: [end.0, end.1, end.2, 0],
@@ -101,6 +110,7 @@ impl Stager {
         };
         self.header = header;
         self.gpu_nodes = nodes;
+
     }
 
     fn flatten(&self, chunk: Option<&Node>, nodes: &mut Vec<GpuNode>, root_offset: usize) {
@@ -119,11 +129,15 @@ impl Stager {
                 let mut children: Vec<&Node> = Vec::new();
     
                 for (i, child) in branch.children.iter().enumerate() {
+                    if let Node::Empty = child.as_ref() {
+                        continue;
+                    }
                     mask |= 1 << i;
                     children.push(child.as_ref());
                 }
     
-                nodes[root_offset].mask = mask;
+                nodes[root_offset].mask_l = mask as u32;
+                nodes[root_offset].mask_h = (mask >> 32) as u32;
                 nodes[root_offset].base = nodes.len() as u32;
     
                 // reserve space for children
@@ -137,7 +151,9 @@ impl Stager {
                 }
             }
             Node::Leaf(mask) => {
-                nodes[root_offset].mask = *mask;
+                let mask = *mask; 
+                nodes[root_offset].mask_l = mask as u32;
+                nodes[root_offset].mask_h = (mask >> 32) as u32;
             }
         }
     
@@ -150,13 +166,17 @@ impl Stager {
                     let mut children: Vec<&Node> = Vec::new();
     
                     for (i, child) in branch.children.iter().enumerate() {
+                        if let Node::Empty = child.as_ref() {
+                            continue;
+                        }
                         mask |= 1 << i;
                         children.push(child.as_ref());
                     }
     
                     let base = nodes.len();
     
-                    nodes[index].mask = mask;
+                    nodes[index].mask_l = mask as u32;
+                    nodes[index].mask_h = (mask >> 32) as u32;
                     nodes[index].base = base as u32;
     
                     // reserve space for children

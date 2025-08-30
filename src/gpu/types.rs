@@ -12,11 +12,12 @@ pub struct GpuRoot {
 }
 
 #[repr(C)]
-#[derive(Default, Clone, Copy, Pod, Zeroable)]
+#[derive(Default, Clone, Copy, Pod, Zeroable, Debug)]
 pub struct GpuNode {
     // bit i = 1: children base + i exists
     // if mask == 0 { this node is leaf_node }
-    pub mask: u64,
+    pub mask_h: u32,
+    pub mask_l: u32,
 
     // base pointer to next GpuNode in Buffer
     pub base: u32,
@@ -28,7 +29,8 @@ pub struct GpuNode {
 impl GpuNode {
     pub fn set_leaf(mask: u64, color_index: u32) -> Self {
         Self {
-            mask,
+            mask_h: (mask >> 32) as u32,
+            mask_l: mask as u32,
             base: 0,
             color_index: color_index,
         }
@@ -60,7 +62,7 @@ impl GpuScene {
         let nodes = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Nodes"),
             size: 131_072,
-            usage: BufferUsages::COPY_DST | BufferUsages::STORAGE,
+            usage: BufferUsages::COPY_DST | BufferUsages::STORAGE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
