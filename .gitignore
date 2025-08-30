@@ -1,5 +1,7 @@
 # Rust build directory
 /target/
+Learning resources/
+drive-download-20250426T182412Z-001/
 
 # Cargo lock file (if this is a library)
 # Cargo.lock
